@@ -2,3 +2,5 @@ streamlit
 requests
 pandas
 pydeck
+streamlit-js-eval
+geopy

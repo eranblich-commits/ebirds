@@ -3,46 +3,42 @@ import requests
 import pandas as pd
 import pydeck as pdk
 import math
+import json
+import os
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
 
 # הגדרות דף
-st.set_page_config(page_title="eBird Israel Pro", layout="wide")
+st.set_page_config(page_title="eBird Israel Pro Explorer", layout="wide")
 
-# מילון שמות ציפורים (עברית - אנגלית - מדעי)
-# הוספתי רשימה לדוגמה, ניתן להרחיב אותה בקלות
-BIRDS_DICT = [
-    {"heb": "עגור מצוי", "eng": "Common Crane", "sci": "Grus grus"},
-    {"heb": "סיקסק", "eng": "Spur-winged Lapwing", "sci": "Vanellus spinosus"},
-    {"heb": "שלדג לבן-חזה", "eng": "White-throated Kingfisher", "sci": "Halcyon smyrnensis"},
-    {"heb": "בז מצוי", "eng": "Common Kestrel", "sci": "Falco tinnunculus"},
-    {"heb": "צופית בוהקת", "eng": "Palestine Sunbird", "sci": "Cinnyris osea"},
-    {"heb": "דוכיפת", "eng": "Eurasian Hoopoe", "sci": "Upupa epops"},
-    {"heb": "שקנאי מצוי", "eng": "Great White Pelican", "sci": "Pelecanus onocrotalus"},
-    {"heb": "חסידה לבנה", "eng": "White Stork", "sci": "Ciconia ciconia"},
-    {"heb": "דית שחורה", "eng": "Black Kite", "sci": "Milvus migrans"},
-    {"heb": "עקב עיטי", "eng": "Long-legged Buzzard", "sci": "Buteo rufinus"},
-    {"heb": "זרזיר מצוי", "eng": "Common Starling", "sci": "Sturnus vulgaris"},
-    {"heb": "נחליאלי לבן", "eng": "White Wagtail", "sci": "Motacilla alba"},
-    {"heb": "כרוון מצוי", "eng": "Eurasian Stone-curlew", "sci": "Burhinus oedicnemus"},
-    {"heb": "לבנית קטנה", "eng": "Little Egret", "sci": "Egretta garzetta"},
-    {"heb": "אנפת לילה", "eng": "Black-crowned Night-Heron", "sci": "Nycticorax nycticorax"}
-]
+# פונקציה לטעינת רשימת הציפורים מקובץ JSON
+@st.cache_data
+def load_birds_data():
+    file_path = 'birds.json'
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            st.error(f"שגיאה בטעינת קובץ הציפורים: {e}")
+            return []
+    return []
 
-# יצירת רשימה לתצוגה בתיבת הבחירה: "עברית (אנגלית)"
-BIRD_OPTIONS = [f"{b['heb']} ({b['eng']})" for b in BIRDS_DICT]
-# מפה לשליפה מהירה של השם המדעי לפי הבחירה
-BIRD_TO_SCI = {f"{b['heb']} ({b['eng']})": b['sci'] for b in BIRDS_DICT}
+# טעינת הנתונים ועיבודם לרשימת בחירה
+ALL_BIRDS = load_birds_data()
+BIRD_OPTIONS = [f"{b['heb']} ({b['eng']})" for b in ALL_BIRDS]
+BIRD_MAP = {f"{b['heb']} ({b['eng']})": b['sci'] for b in ALL_BIRDS}
 
 class eBirdRadiusExplorer:
     def __init__(self):
         self.base_url = "https://api.ebird.org/v2"
-        self.geolocator = Nominatim(user_agent="ebird_explorer_il_v4")
+        self.geolocator = Nominatim(user_agent="ebird_israel_vfinal")
 
     def get_headers(self, api_key):
         return {"X-eBirdApiToken": api_key}
 
     def calculate_distance(self, lat1, lon1, lat2, lon2):
+        """חישוב מרחק אווירי מדויק בק"מ (נוסחת הברסין)"""
         R = 6371
         dlat = math.radians(lat2 - lat1)
         dlon = math.radians(lon2 - lon1)
@@ -53,9 +49,12 @@ class eBirdRadiusExplorer:
     def get_nearby_hotspots(_self, lat, lon, dist, api_key):
         headers = _self.get_headers(api_key)
         url = f"{_self.base_url}/ref/hotspot/geo"
+        # API של eBird מוגבל ל-50 ק"מ. לכן נבקש 50 ונבצע סינון ידני אם נדרש פחות.
         params = {"lat": lat, "lng": lon, "dist": min(dist, 50), "fmt": "json"}
         res = requests.get(url, headers=headers, params=params)
         all_hs = res.json() if res.status_code == 200 else []
+        
+        # הוספת המרחק המחושב לכל מוקד
         for hs in all_hs:
             hs['calculated_dist'] = _self.calculate_distance(lat, lon, hs['lat'], hs['lng'])
         return all_hs
@@ -69,92 +68,56 @@ class eBirdRadiusExplorer:
         return res.json() if res.status_code == 200 else []
 
 explorer = eBirdRadiusExplorer()
-st.title("🇮🇱 eBird Israel Pro")
+st.title("🇮🇱 צפרות ישראל - Explorer Pro")
 
 with st.sidebar:
-    st.header("הגדרות")
-    api_key = st.text_input("API Key:", type="password")
-    mode = st.radio("מרכז חיפוש:", ["כפר סבא", "המיקום שלי", "עיר אחרת"])
+    st.header("הגדרות מיקום")
+    api_key = st.text_input("API Key (eBird):", type="password")
     
-    clat, clon = 32.175, 34.906 # כפ"ס
-    if mode == "המיקום שלי":
+    mode = st.radio("נקודת מרכז:", ["כפר סבא", "חיפוש עיר (ידני)", "המיקום שלי (GPS)"])
+    
+    clat, clon = 32.175, 34.906 # ברירת מחדל
+    
+    if mode == "חיפוש עיר (ידני)":
+        city_input = st.text_input("הכנס שם עיר (אנגלית):", "Haifa")
+        location = explorer.geolocator.geocode(f"{city_input}, Israel")
+        if location:
+            clat, clon = location.latitude, location.longitude
+            st.success(f"נמצא: {location.address[:30]}...")
+    
+    elif mode == "המיקום שלי (GPS)":
         loc = get_geolocation()
-        if loc: clat, clon = loc['coords']['latitude'], loc['coords']['longitude']
-    elif mode == "עיר אחרת":
-        city_name = st.text_input("שם עיר באנגלית:", "Haifa")
-        res = explorer.geolocator.geocode(f"{city_name}, Israel")
-        if res: clat, clon = res.latitude, res.longitude
+        if loc:
+            clat = loc['coords']['latitude']
+            clon = loc['coords']['longitude']
+            st.success("המיקום זוהה בהצלחה")
+        else:
+            st.info("אנא אשר גישת מיקום בדפדפן...")
 
-    radius = st.slider("רדיוס (ק\"מ):", 1, 50, 15)
+    radius = st.slider("רדיוס חיפוש (ק\"מ):", 1, 100, 25)
     days = st.slider("ימים אחורה:", 1, 30, 7)
 
 if not api_key:
-    st.info("אנא הזן API Key בסרגל הצד.")
+    st.warning("יש להזין API Key בסרגל הצד.")
     st.stop()
 
-tab1, tab2 = st.tabs(["📊 תצפיות באזור", "🎯 חיפוש מין"])
+tab1, tab2 = st.tabs(["📊 תצפיות באזור", "🎯 חיפוש מין ספציפי"])
 
 with tab1:
-    if st.button("🔍 חפש הכל בסביבה"):
-        with st.spinner("סורק מוקדים..."):
+    if st.button("🔍 סרוק מוקדים בסביבה"):
+        with st.spinner("מושך נתונים..."):
             hotspots = explorer.get_nearby_hotspots(clat, clon, radius, api_key)
             results = []
-            for hs in hotspots[:60]:
+            progress_bar = st.progress(0)
+            
+            for i, hs in enumerate(hotspots[:60]): # הגבלה ל-60 מוקדים לביצועים
                 obs = explorer.get_observations(hs['locId'], api_key, days)
                 if obs:
                     results.append({
                         "מיקום": hs['locName'],
                         "ק\"מ": round(hs['calculated_dist'], 1),
                         "מינים": len(set(o['sciName'] for o in obs)),
-                        "פרטים": sum(o.get('howMany', 0) for o in obs),
                         "תאריך": obs[0]['obsDt'].split(' ')[0],
                         "lat": hs['lat'], "lon": hs['lng']
                     })
-            if results:
-                df = pd.DataFrame(results).sort_values(by="מינים", ascending=False)
-                st.dataframe(df.drop(columns=['lat', 'lon']), use_container_width=True,
-                             column_config={"מיקום": st.column_config.TextColumn(pinned=True)})
-                # מפה
-                st.pydeck_chart(pdk.Deck(
-                    layers=[pdk.Layer("ScatterplotLayer", df, get_position=["lon", "lat"], get_color=[200, 30, 0, 160], get_radius=300, pickable=True)],
-                    initial_view_state=pdk.ViewState(latitude=clat, longitude=clon, zoom=11),
-                    tooltip={"text": "{מיקום}"}
-                ))
-
-with tab2:
-    st.subheader("חיפוש מין עם השלמה (עברית ואנגלית)")
-    
-    # תיבת בחירה עם השלמה אוטומטית הכוללת עברית ואנגלית
-    selected_bird = st.selectbox(
-        "התחל להקליד שם ציפור (בעברית או באנגלית):",
-        options=[""] + BIRD_OPTIONS,
-        format_func=lambda x: "בחר מין..." if x == "" else x
-    )
-
-    if st.button("🎯 חפש את הציפור"):
-        if selected_bird:
-            sci_name = BIRD_TO_SCI[selected_bird]
-            with st.spinner(f"מחפש {selected_bird}..."):
-                hotspots = explorer.get_nearby_hotspots(clat, clon, radius, api_key)
-                s_results = []
-                for hs in hotspots[:60]:
-                    obs = explorer.get_observations(hs['locId'], api_key, days)
-                    # חישוב התאמה לפי השם המדעי (הכי מדויק)
-                    matches = [o for o in obs if sci_name.lower() in o.get('sciName','').lower()]
-                    if matches:
-                        best = max(matches, key=lambda x: x.get('howMany', 0))
-                        s_results.append({
-                            "מיקום": hs['locName'],
-                            "ק\"מ": round(hs['calculated_dist'], 1),
-                            "כמות": best.get('howMany', 0),
-                            "תאריך": best.get('obsDt', '').split(' ')[0],
-                            "lat": hs['lat'], "lon": hs['lng']
-                        })
-                
-                if s_results:
-                    sdf = pd.DataFrame(s_results).sort_values(by="כמות", ascending=False)
-                    st.success(f"נמצאו {len(sdf)} מיקומים!")
-                    st.dataframe(sdf.drop(columns=['lat', 'lon']), use_container_width=True,
-                                 column_config={"מיקום": st.column_config.TextColumn(pinned=True)})
-                else:
-                    st.info("לא נמצאו תצפיות של המין הנבחר ברדיוס ובתקופה זו.")
+                progress_bar.progress

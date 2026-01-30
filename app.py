@@ -5,7 +5,6 @@ import math
 import json
 import os
 import random
-from concurrent.futures import ThreadPoolExecutor
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
 
@@ -28,7 +27,7 @@ BIRD_MAP = {f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})": b.get('sci
 class eBirdRadiusExplorer:
     def __init__(self):
         self.base_url = "https://api.ebird.org/v2"
-        self.ua = f"ebird_pro_il_{random.randint(1000, 9999)}"
+        self.ua = f"ebird_pro_fixed_{random.randint(1000, 9999)}"
         self.geolocator = Nominatim(user_agent=self.ua)
 
     def calculate_distance(self, lat1, lon1, lat2, lon2):
@@ -38,20 +37,22 @@ class eBirdRadiusExplorer:
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
         return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-    def get_hotspots_in_radius(self, lat, lon, dist, key):
-        url = f"{self.base_url}/ref/hotspot/geo"
-        params = {"lat": lat, "lng": lon, "dist": dist, "fmt": "json"}
-        res = requests.get(url, headers={"X-eBirdApiToken": key}, params=params)
-        return res.json() if res.status_code == 200 else []
-
-    def get_all_obs_for_hotspot(self, loc_id, days, key):
-        url = f"{self.base_url}/data/obs/{loc_id}/recent"
-        params = {"back": days, "includeProvisional": "true", "fmt": "json"}
+    def fetch_all_recent_obs(self, lat, lon, dist, days, key):
+        # שימוש ב-Endpoint גאוגרפי ישיר שמחזיר את כל הדיווחים הגולמיים ברדיוס
+        url = f"{self.base_url}/data/obs/geo/recent"
+        params = {
+            "lat": lat,
+            "lng": lon,
+            "dist": dist, # הרדיוס נשלח ישירות ל-eBird
+            "back": days,
+            "includeProvisional": "true",
+            "fmt": "json"
+        }
         res = requests.get(url, headers={"X-eBirdApiToken": key}, params=params)
         return res.json() if res.status_code == 200 else []
 
 explorer = eBirdRadiusExplorer()
-st.title("🇮🇱 צפרות ישראל - סריקה עמוקה")
+st.title("🇮🇱 צפרות ישראל - Explorer Pro (גרסה מתוקנת)")
 
 with st.sidebar:
     st.header("הגדרות חיפוש")
@@ -69,8 +70,8 @@ with st.sidebar:
             if res: clat, clon = res.latitude, res.longitude
         except: pass
     
-    radius = st.slider("רדיוס (ק\"מ):", 1, 50, 10)
-    days = st.slider("ימים אחורה:", 1, 14, 3)
+    radius = st.slider("רדיוס לחיפוש (ק\"מ):", 1, 50, 50)
+    days = st.slider("ימים אחורה:", 1, 30, 7)
 
 if not api_key:
     st.info("אנא הזן API Key בסרגל הצד.")
@@ -78,67 +79,58 @@ if not api_key:
 
 tab1, tab2 = st.tabs(["📊 10 המוקדים העשירים", "🎯 10 התצפיות הגדולות למין"])
 
-# פונקציה להרצה מקבילה של שליפת נתונים ממוקדים (שיפור ביצועים)
-def scan_area(clat, clon, radius, days, api_key):
-    hotspots = explorer.get_hotspots_in_radius(clat, clon, radius, api_key)
-    # נגביל ל-30 מוקדים קרובים כדי לא לחסום את ה-API
-    for hs in hotspots:
-        hs['d'] = explorer.calculate_distance(clat, clon, hs['lat'], hs['lng'])
-    hotspots = sorted(hotspots, key=lambda x: x['d'])[:30]
+# שליפת נתונים גולמיים לשימוש בשני הטאבים
+if 'raw_data' not in st.session_state:
+    st.session_state.raw_data = None
+
+if st.button("🚀 רענן נתונים וסרוק רדיוס"):
+    with st.spinner(f"מושך את כל הדיווחים בטווח {radius} ק\"מ..."):
+        st.session_state.raw_data = explorer.fetch_all_recent_obs(clat, clon, radius, days, api_key)
+
+if st.session_state.raw_data:
+    raw_obs = st.session_state.raw_data
     
-    all_results = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(explorer.get_all_obs_for_hotspot, h['locId'], days, api_key): h for h in hotspots}
-        for future in futures:
-            hs = futures[future]
-            obs = future.result()
-            if obs:
-                all_results.append({"hotspot": hs, "observations": obs})
-    return all_results
+    with tab1:
+        summary = []
+        df_raw = pd.DataFrame(raw_obs)
+        if not df_raw.empty:
+            for loc_id, group in df_raw.groupby('locId'):
+                dist = explorer.calculate_distance(clat, clon, group.iloc[0]['lat'], group.iloc[0]['lng'])
+                summary.append({
+                    "מיקום": group.iloc[0]['locName'],
+                    "ק\"מ": round(dist, 1),
+                    "מספר מינים": len(group['sciName'].unique()),
+                    "תאריך": group['obsDt'].max().split(' ')[0]
+                })
+            top_10 = pd.DataFrame(summary).sort_values("מספר מינים", ascending=False).head(10)
+            st.write(f"נמצאו {len(summary)} מוקדים ברדיוס. הנה ה-10 העשירים ביותר:")
+            st.table(top_10)
 
-with tab1:
-    if st.button("🔍 בצע סריקה עמוקה"):
-        with st.spinner("סורק מוקד-מוקד לדיוק מקסימלי..."):
-            data = scan_area(clat, clon, radius, days, api_key)
-            if data:
-                summary = []
-                for entry in data:
-                    obs = entry['observations']
-                    summary.append({
-                        "מיקום": entry['hotspot']['locName'],
-                        "ק\"מ": round(entry['hotspot']['d'], 1),
-                        "מספר מינים": len(set(o['sciName'] for o in obs)),
-                        "תאריך": obs[0]['obsDt'].split(' ')[0]
-                    })
-                top_10 = pd.DataFrame(summary).sort_values("מספר מינים", ascending=False).head(10)
-                st.table(top_10)
-            else:
-                st.warning("לא נמצאו נתונים.")
-
-with tab2:
-    selected_bird = st.selectbox("בחר ציפור לחיפוש כמות מקסימלית:", [""] + BIRD_OPTIONS)
-    if st.button("🎯 חפש תצפיות שיא") and selected_bird:
-        target_sci = BIRD_MAP.get(selected_bird)
-        with st.spinner(f"סורק את כל הדיווחים הגולמיים במוקדים עבור {selected_bird}..."):
-            data = scan_area(clat, clon, radius, days, api_key)
-            bird_obs = []
-            for entry in data:
-                for o in entry['observations']:
-                    if target_sci.lower() in o.get('sciName', '').lower():
-                        c_str = o.get('howMany', '1')
-                        count = int(c_str) if str(c_str).isdigit() else 1
-                        bird_obs.append({
-                            "מיקום": entry['hotspot']['locName'],
-                            "כמות": c_str,
-                            "מספר": count,
-                            "ק\"מ": round(entry['hotspot']['d'], 1),
-                            "תאריך": o['obsDt'],
-                            "צופה": o.get('userDisplayName', 'אנונימי')
-                        })
+    with tab2:
+        selected_bird = st.selectbox("בחר ציפור:", [""] + BIRD_OPTIONS)
+        if selected_bird:
+            target_sci = BIRD_MAP.get(selected_bird)
+            # סינון המין המבוקש מתוך כל המידע שנסרק ברדיוס
+            matches = [o for o in raw_obs if target_sci.lower() in o.get('sciName', '').lower()]
             
-            if bird_obs:
-                final_df = pd.DataFrame(bird_obs).sort_values("מספר", ascending=False).head(10)
-                st.success(f"נמצאו תצפיות! הנה ה-10 הגדולות ביותר:")
+            if matches:
+                bird_list = []
+                for o in matches:
+                    c_str = o.get('howMany', '1')
+                    count = int(c_str) if str(c_str).isdigit() else 1
+                    bird_list.append({
+                        "מיקום": o['locName'],
+                        "כמות": c_str,
+                        "מספר": count,
+                        "מרחק": round(explorer.calculate_distance(clat, clon, o['lat'], o['lng']), 1),
+                        "תאריך": o['obsDt'],
+                        "צופה": o.get('userDisplayName', 'אנונימי')
+                    })
+                
+                final_df = pd.DataFrame(bird_list).sort_values("מספר", ascending=False).head(10)
+                st.success(f"נמצאו {len(bird_list)} דיווחים ברדיוס של {radius} ק\"מ.")
                 st.table(final_df.drop(columns=['מספר']))
             else:
-                st.info("לא נמצאו תצפיות למין זה בסריקה העמוקה.")
+                st.info(f"לא נמצאו דיווחים של {selected_bird} בטווח שנבחר.")
+else:
+    st.warning("לחץ על הכפתור 'רענן נתונים' כדי להתחיל בסריקה.")

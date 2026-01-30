@@ -2,43 +2,17 @@ import streamlit as st
 import requests
 import pandas as pd
 import math
-import json
-import os
 import random
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
 
-st.set_page_config(page_title="eBird Israel Ultimate", layout="wide")
-
-@st.cache_data
-def load_birds_data():
-    file_path = 'birds.json'
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except: return []
-    return []
-
-ALL_BIRDS = load_birds_data()
-BIRD_OPTIONS = [f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})" for b in ALL_BIRDS]
-BIRD_MAP = {f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})": b.get('sci', '') for b in ALL_BIRDS}
+st.set_page_config(page_title="eBird Israel Ultimate Pro", layout="wide")
 
 class eBirdEngine:
     def __init__(self, api_key):
         self.api_key = api_key
+        self.headers = {"X-eBirdApiToken": api_key}
         self.base_url = "https://api.ebird.org/v2"
-
-    def get_raw_data(self, lat, lon, dist, days):
-        """שואב את כל זרם התצפיות הגולמי ללא סינון שרת"""
-        url = f"{self.base_url}/data/obs/geo/recent"
-        params = {
-            "lat": lat, "lng": lon, "dist": dist,
-            "back": days, "includeProvisional": "true", "fmt": "json"
-        }
-        headers = {"X-eBirdApiToken": self.api_key}
-        res = requests.get(url, headers=headers, params=params)
-        return res.json() if res.status_code == 200 else []
 
     def calculate_distance(self, lat1, lon1, lat2, lon2):
         R = 6371
@@ -46,7 +20,26 @@ class eBirdEngine:
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
         return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-st.title("🇮🇱 צפרות ישראל - גרסת הנתונים המלאים")
+    def fetch_comprehensive_data(self, lat, lon, dist, days):
+        """שואב נתונים מכמה מקורות במקביל כדי להגיע למקסימום תצפיות"""
+        params = {"lat": lat, "lng": lon, "dist": dist, "back": days, "fmt": "json", "includeProvisional": "true"}
+        
+        # 1. תצפיות אחרונות כלליות
+        r_recent = requests.get(f"{self.base_url}/data/obs/geo/recent", headers=self.headers, params=params)
+        # 2. תצפיות 'ראויות לציון' (כאן נמצאים הדיווחים הגדולים והנדירים יותר)
+        r_notable = requests.get(f"{self.base_url}/data/obs/geo/recent/notable", headers=self.headers, params=params)
+        
+        data = []
+        if r_recent.status_code == 200: data.extend(r_recent.json())
+        if r_notable.status_code == 200: data.extend(r_notable.json())
+        
+        # הסרת כפילויות לפי מזהה תצפית (obsId) אם קיים
+        df = pd.DataFrame(data)
+        if not df.empty and 'subId' in df.columns:
+            df = df.drop_duplicates(subset=['subId', 'sciName', 'howMany'])
+        return df
+
+st.title("🇮🇱 צפרות ישראל - גרסת המקסימום האמיתי")
 
 with st.sidebar:
     api_key = st.text_input("API Key:", type="password")
@@ -69,61 +62,57 @@ if not api_key:
 
 engine = eBirdEngine(api_key)
 
-# כפתור מרכזי לשאיבת המאגר הגולמי
-if st.button("🔄 טען נתוני שטח מלאים (Raw Scan)"):
-    with st.spinner("שואב את כל התצפיות ברדיוס..."):
-        # שאיבה אחת גדולה של הכל
-        raw_data = engine.get_raw_data(clat, clon, radius, days)
-        st.session_state['master_data'] = raw_data
-        st.success(f"נטענו {len(raw_data)} תצפיות גולמיות.")
+if st.button("🚀 סרוק את כל הרדיוס (סריקה עמוקה)"):
+    with st.spinner("שואב וממזג נתונים מכל המקורות..."):
+        df = engine.fetch_comprehensive_data(clat, clon, radius, days)
+        if not df.empty:
+            # חישוב מרחק לכל שורה בנפרד
+            df['distance'] = df.apply(lambda x: engine.calculate_distance(clat, clon, x['lat'], x['lng']), axis=1)
+            st.session_state['master_df'] = df
+            st.success(f"נטענו {len(df)} תצפיות ייחודיות.")
+        else:
+            st.error("לא התקבלו נתונים מה-API.")
 
-if 'master_data' in st.session_state:
-    data = st.session_state['master_data']
-    tab1, tab2 = st.tabs(["📊 מוקדים עשירים", "🎯 חיפוש מין (דיוק מקסימלי)"])
+if 'master_df' in st.session_state:
+    df = st.session_state['master_df']
+    tab1, tab2 = st.tabs(["📊 10 מוקדים עשירים", "🎯 10 תצפיות שיא למין"])
 
     with tab1:
-        # עיבוד המוקדים מהנתונים הגולמיים
-        df = pd.DataFrame(data)
-        if not df.empty:
-            summary = []
-            for loc_id, group in df.groupby('locId'):
-                d = engine.calculate_distance(clat, clon, group.iloc[0]['lat'], group.iloc[0]['lng'])
-                summary.append({
-                    "מיקום": group.iloc[0]['locName'],
-                    "מרחק": round(d, 1),
-                    "מינים": len(group['sciName'].unique()),
-                    "תאריך": group['obsDt'].max()
-                })
-            res_df = pd.DataFrame(summary).sort_values("מינים", ascending=False).head(10)
-            st.write("### 10 המקומות עם מגוון המינים הגדול ביותר")
-            st.table(res_df)
+        # כאן אנחנו סופרים כמה מינים יש באמת בכל מוקד
+        summary = []
+        for loc_id, group in df.groupby('locId'):
+            summary.append({
+                "מיקום": group.iloc[0]['locName'],
+                "מרחק (ק\"מ)": round(group.iloc[0]['distance'], 1),
+                "מספר מינים": group['sciName'].nunique(),
+                "עדכון": group['obsDt'].max()
+            })
+        top_10_locs = pd.DataFrame(summary).sort_values("מספר מינים", ascending=False).head(10)
+        st.write("### המוקדים עם מגוון המינים הגדול ביותר ברדיוס")
+        st.table(top_10_locs)
 
     with tab2:
-        selected_bird = st.selectbox("בחר ציפור לניתוח כמויות:", [""] + BIRD_OPTIONS)
+        from birds_data import ALL_BIRDS # בהנחה שזה המבנה שלך, או השתמש ב-load_birds_data
+        bird_map = {f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})": b.get('sci', '') for b in load_birds_data()}
+        selected_bird = st.selectbox("בחר ציפור לניתוח כמויות:", [""] + list(bird_map.keys()))
+        
         if selected_bird:
-            target_sci = BIRD_MAP.get(selected_bird)
-            # סינון ידני בתוך הקוד - כאן אנחנו לא מפספסים כלום
-            matches = [o for o in data if target_sci.lower() in o.get('sciName', '').lower()]
+            target_sci = bird_map.get(selected_bird)
+            # סינון המין המבוקש - חיפוש גמיש בשם המדעי
+            matches = df[df['sciName'].str.contains(target_sci, case=False, na=False)].copy()
             
-            if matches:
-                processed = []
-                for o in matches:
-                    how_many = o.get('howMany')
-                    # לוגיקת X: נחשב כ-1 למיון, מוצג כ-X
-                    sort_val = int(how_many) if (how_many and str(how_many).isdigit()) else 1
-                    
-                    processed.append({
-                        "מיקום": o['locName'],
-                        "כמות": how_many if how_many else "X",
-                        "sort_val": sort_val,
-                        "מרחק": round(engine.calculate_distance(clat, clon, o['lat'], o['lng']), 1),
-                        "תאריך": o['obsDt'],
-                        "צופה": o.get('userDisplayName', 'אנונימי')
-                    })
+            if not matches.empty:
+                # טיפול בכמויות (X הופך ל-1 לצורכי מיון)
+                matches['sort_qty'] = pd.to_numeric(matches['howMany'], errors='coerce').fillna(1).astype(int)
                 
-                # מיון לפי הכמות הגבוהה ביותר
-                final_df = pd.DataFrame(processed).sort_values("sort_val", ascending=False).head(10)
+                # הצגת 10 התצפיות הגדולות ביותר (ללא איחוד מוקדים - כל דיווח בנפרד!)
+                top_10_obs = matches.sort_values("sort_qty", ascending=False).head(10)
+                
+                display_df = top_10_obs[['locName', 'howMany', 'distance', 'obsDt', 'userDisplayName']].copy()
+                display_df.columns = ['מיקום', 'כמות', 'מרחק (ק\"מ)', 'תאריך', 'צופה']
+                display_df['מרחק (ק\"מ)'] = display_df['מרחק (ק\"מ)'].round(1)
+                
                 st.write(f"### 10 התצפיות הגדולות ביותר של {selected_bird}")
-                st.table(final_df.drop(columns=['sort_val']))
+                st.table(display_df)
             else:
-                st.info("המין לא נמצא במאגר הגולמי שנטען.")
+                st.info("לא נמצאו תצפיות למין זה במאגר שנסרק.")

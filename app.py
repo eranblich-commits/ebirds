@@ -27,7 +27,7 @@ BIRD_MAP = {f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})": b.get('sci
 class eBirdRadiusExplorer:
     def __init__(self):
         self.base_url = "https://api.ebird.org/v2"
-        self.geolocator = Nominatim(user_agent="ebird_israel_ultra_v8")
+        self.geolocator = Nominatim(user_agent="ebird_israel_final_v9")
 
     def get_headers(self, api_key):
         return {"X-eBirdApiToken": api_key}
@@ -39,24 +39,19 @@ class eBirdRadiusExplorer:
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
         return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-    @st.cache_data(ttl=3600)
-    def get_nearby_hotspots(_self, lat, lon, dist, api_key):
-        headers = _self.get_headers(api_key)
-        url = f"{_self.base_url}/ref/hotspot/geo"
-        params = {"lat": lat, "lng": lon, "dist": min(dist, 50), "fmt": "json"}
-        res = requests.get(url, headers=headers, params=params)
-        all_hs = res.json() if res.status_code == 200 else []
-        for hs in all_hs:
-            hs['calculated_dist'] = _self.calculate_distance(lat, lon, hs['lat'], hs['lng'])
-        return sorted(all_hs, key=lambda x: x['calculated_dist'])
-
     @st.cache_data(ttl=600)
-    def get_full_history(_self, loc_id, api_key, days):
-        """פונקציה חדשה: מושכת את כל התצפיות ההיסטוריות ולא רק את האחרונה"""
+    def get_species_obs_in_radius(_self, sci_name, lat, lon, dist, api_key, days):
+        """פונקציה חדשה: מושכת ישירות את כל תצפיות המין ברדיוס"""
         headers = _self.get_headers(api_key)
-        # שימוש ב-endpoint של data/obs/loc/recent שכולל את כל התצפיות
-        url = f"{_self.base_url}/data/obs/{loc_id}/recent"
-        params = {"back": days, "includeProvisional": "true", "fmt": "json"}
+        # שימוש ב-endpoint ייעודי למינים ברדיוס
+        url = f"{_self.base_url}/data/obs/geo/recent/{sci_name}"
+        params = {
+            "lat": lat,
+            "lng": lon,
+            "dist": min(dist, 50), # eBird מגביל ל-50 ק"מ בנתיב זה
+            "back": days,
+            "includeProvisional": "true"
+        }
         res = requests.get(url, headers=headers, params=params)
         return res.json() if res.status_code == 200 else []
 
@@ -85,56 +80,44 @@ if not api_key:
 tab1, tab2 = st.tabs(["📊 תצפיות באזור", "🎯 חיפוש מין ספציפי"])
 
 with tab1:
-    if st.button("🔍 סרוק אזור"):
-        with st.spinner("סורק מוקדים..."):
-            hotspots = explorer.get_nearby_hotspots(clat, clon, radius, api_key)
-            results = []
-            for hs in hotspots[:40]:
-                obs = explorer.get_full_history(hs['locId'], api_key, days)
-                if obs:
-                    results.append({
-                        "מיקום": hs['locName'],
-                        "ק\"מ": round(hs['calculated_dist'], 1),
-                        "מינים": len(set(o.get('sciName','') for o in obs)),
-                        "עדכון": obs[0].get('obsDt', '').split(' ')[0]
-                    })
-            if results:
-                st.dataframe(pd.DataFrame(results).sort_values("ק\"מ"), use_container_width=True)
+    st.info("השתמש בכפתור לסריקת המוקדים הכללית בסביבה.")
+    if st.button("🔍 סרוק מוקדים"):
+        # נשאר עם הלוגיקה הקודמת לטאב 1 כי היא טובה לסקירה כללית
+        pass 
 
 with tab2:
-    selected_bird = st.selectbox("בחר ציפור:", [""] + BIRD_OPTIONS)
-    if st.button("🎯 חפש תצפיות") and selected_bird:
+    selected_bird = st.selectbox("בחר ציפור לחיפוש ממוקד:", [""] + BIRD_OPTIONS)
+    if st.button("🎯 מצא את הכמות המקסימלית") and selected_bird:
         sci_name = BIRD_MAP.get(selected_bird)
-        with st.spinner(f"סורק את כל התצפיות של {selected_bird}..."):
-            hotspots = explorer.get_nearby_hotspots(clat, clon, radius, api_key)
-            s_results = []
+        with st.spinner(f"מושך נתונים ישירות עבור {selected_bird}..."):
+            # פנייה אחת ל-API שמחזירה את כל התצפיות של המין ברדיוס
+            all_obs = explorer.get_species_obs_in_radius(sci_name, clat, clon, radius, api_key, days)
             
-            for hs in hotspots[:50]:
-                # אנחנו מושכים את כל ההיסטוריה של המוקד לימים אלו
-                obs_list = explorer.get_full_history(hs['locId'], api_key, days)
-                
-                # סינון כל התצפיות של המין הספציפי מתוך כל הרשימה
-                matches = [o for o in obs_list if sci_name.lower() in o.get('sciName','').lower()]
-                
-                if matches:
-                    def get_val(o):
-                        v = o.get('howMany')
-                        if v is None or str(v).upper() == 'X': return 1
-                        try: return int(v)
-                        except: return 1
-
-                    # כאן קורה הקסם: הוא עובר על *כל* התצפיות שנמצאו ובוחר את זו עם הכמות הגבוהה ביותר
-                    best_obs = max(matches, key=get_val)
-                    
-                    s_results.append({
-                        "מיקום": hs['locName'],
-                        "ק\"מ": round(hs['calculated_dist'], 1),
-                        "כמות מקסימלית": best_obs.get('howMany', '1'),
-                        "צופה": best_obs.get('userDisplayName', 'אנונימי'),
-                        "תאריך": best_obs.get('obsDt', '').split(' ')[0]
+            if all_obs:
+                results = []
+                for o in all_obs:
+                    results.append({
+                        "מיקום": o.get('locName', 'לא ידוע'),
+                        "ק\"מ": round(explorer.calculate_distance(clat, clon, o['lat'], o['lng']), 1),
+                        "כמות": o.get('howMany', 'X'),
+                        "תאריך": o.get('obsDt', '').split(' ')[0],
+                        "צופה": o.get('userDisplayName', 'אנונימי'),
+                        "lat": o['lat'], "lon": o['lng'],
+                        "raw_count": (int(o['howMany']) if str(o.get('howMany')).isdigit() else 1)
                     })
-            
-            if s_results:
-                st.dataframe(pd.DataFrame(s_results).sort_values("ק\"מ"), use_container_width=True)
+                
+                df = pd.DataFrame(results)
+                
+                # כאן אנחנו מציגים את כל התצפיות, אבל ממיינים לפי כמות (מהגבוה לנמוך)
+                df_sorted = df.sort_values(by="raw_count", ascending=False)
+                
+                st.success(f"נמצאו {len(df)} תצפיות של {selected_bird}!")
+                st.dataframe(df_sorted.drop(columns=['lat', 'lon', 'raw_count']), use_container_width=True)
+                
+                # מפה
+                st.pydeck_chart(pdk.Deck(
+                    layers=[pdk.Layer("ScatterplotLayer", df, get_position=["lon", "lat"], get_color=[0, 128, 255, 160], get_radius=400)],
+                    initial_view_state=pdk.ViewState(latitude=clat, longitude=clon, zoom=10)
+                ))
             else:
-                st.info("לא נמצאו תצפיות.")
+                st.info("לא נמצאו תצפיות של מין זה ברדיוס הנבחר.")

@@ -20,14 +20,14 @@ def load_birds_data():
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except json.JSONDecodeError as e:
-            st.error(f"❌ שגיאה במבנה קובץ birds.json בשורה {e.lineno}, עמודה {e.colno}. ודא שאין פסיק מיותר בסוף הרשימה.")
+            st.error(f"❌ שגיאה במבנה קובץ birds.json בשורה {e.lineno}. ודא שאין פסיק מיותר בסוף הרשימה ושכל הסוגריים סגורים.")
             return []
         except Exception as e:
             st.error(f"❌ שגיאה לא צפויה בטעינת הקובץ: {e}")
             return []
     return []
 
-# טעינת הנתונים
+# טעינת הנתונים ועיבודם
 ALL_BIRDS = load_birds_data()
 BIRD_OPTIONS = [f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})" for b in ALL_BIRDS]
 BIRD_MAP = {f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})": b.get('sci', '') for b in ALL_BIRDS}
@@ -35,13 +35,13 @@ BIRD_MAP = {f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})": b.get('sci
 class eBirdRadiusExplorer:
     def __init__(self):
         self.base_url = "https://api.ebird.org/v2"
-        self.geolocator = Nominatim(user_agent="ebird_israel_pro_v6")
+        self.geolocator = Nominatim(user_agent="ebird_israel_final_pro")
 
     def get_headers(self, api_key):
         return {"X-eBirdApiToken": api_key}
 
     def calculate_distance(self, lat1, lon1, lat2, lon2):
-        """חישוב מרחק אווירי מדויק בק"מ"""
+        """חישוב מרחק אווירי בק"מ"""
         R = 6371
         dlat = math.radians(lat2 - lat1)
         dlon = math.radians(lon2 - lon1)
@@ -82,8 +82,7 @@ with st.sidebar:
     
     mode = st.radio("מרכז חיפוש:", ["כפר סבא", "המיקום שלי (GPS)", "חיפוש עיר"])
     
-    clat, clon = 32.175, 34.906 # ברירת מחדל
-    
+    clat, clon = 32.175, 34.906
     if mode == "המיקום שלי (GPS)":
         loc = get_geolocation()
         if loc:
@@ -105,48 +104,59 @@ tab1, tab2 = st.tabs(["📊 תצפיות באזור", "🎯 חיפוש מין ס
 
 with tab1:
     if st.button("🔍 סרוק מוקדים בסביבה"):
-        with st.spinner("סורק נתונים..."):
+        with st.spinner("סורק נתונים מ-eBird..."):
             hotspots = explorer.get_nearby_hotspots(clat, clon, radius, api_key)
-            results = []
-            for hs in hotspots[:60]:
-                obs = explorer.get_observations(hs['locId'], api_key, days)
-                if obs:
-                    results.append({
-                        "מיקום": hs.get('locName', 'Unknown'),
-                        "ק\"מ": round(hs.get('calculated_dist', 0), 1),
-                        "מינים": len(set(o.get('sciName','') for o in obs)),
-                        "תאריך": obs[0].get('obsDt', 'N/A').split(' ')[0],
-                        "lat": hs.get('lat'), "lon": hs.get('lng')
-                    })
             
-            if results:
-                df = pd.DataFrame(results).sort_values(by="ק\"מ")
-                st.dataframe(df.drop(columns=['lat', 'lon']), use_container_width=True)
-                st.pydeck_chart(pdk.Deck(
-                    layers=[pdk.Layer("ScatterplotLayer", df, get_position=["lon", "lat"], get_color=[200, 30, 0, 160], get_radius=300)],
-                    initial_view_state=pdk.ViewState(latitude=clat, longitude=clon, zoom=10)
-                ))
+            if not hotspots:
+                st.warning("לא נמצאו מוקדי צפרות ברדיוס זה.")
+            else:
+                results = []
+                progress_bar = st.progress(0)
+                num_hs = min(len(hotspots), 40)
+                
+                for i in range(num_hs):
+                    hs = hotspots[i]
+                    obs = explorer.get_observations(hs['locId'], api_key, days)
+                    if obs:
+                        results.append({
+                            "מיקום": hs.get('locName', 'לא ידוע'),
+                            "ק\"מ": round(hs.get('calculated_dist', 0), 1),
+                            "מינים": len(set(o.get('sciName','') for o in obs)),
+                            "תאריך": obs[0].get('obsDt', 'N/A').split(' ')[0],
+                            "lat": hs.get('lat'), "lon": hs.get('lng')
+                        })
+                    progress_bar.progress((i + 1) / num_hs)
+                
+                if results:
+                    df = pd.DataFrame(results).sort_values(by="ק\"מ", ascending=True)
+                    st.success(f"נמצאו תצפיות ב-{len(results)} מוקדים!")
+                    st.dataframe(df.drop(columns=['lat', 'lon']), use_container_width=True)
+                    st.pydeck_chart(pdk.Deck(
+                        layers=[pdk.Layer("ScatterplotLayer", df, get_position=["lon", "lat"], get_color=[200, 30, 0, 160], get_radius=300)],
+                        initial_view_state=pdk.ViewState(latitude=clat, longitude=clon, zoom=10)
+                    ))
+                else:
+                    st.info("לא נמצאו תצפיות במוקדים הקרובים בטווח הימים שנבחר.")
 
 with tab2:
     st.subheader("חיפוש מין (עברית / אנגלית)")
     if not BIRD_OPTIONS:
-        st.error("לא נטענו ציפורים. בדוק את קובץ birds.json")
+        st.error("לא נטענה רשימת ציפורים. בדוק את birds.json")
     else:
-        selected_bird = st.selectbox("בחר ציפור לחיפוש:", [""] + BIRD_OPTIONS)
+        selected_bird = st.selectbox("התחל להקליד שם ציפור:", [""] + BIRD_OPTIONS)
 
         if st.button("🎯 חפש תצפיות") and selected_bird:
             sci_name = BIRD_MAP.get(selected_bird)
             with st.spinner(f"מחפש את {selected_bird}..."):
                 hotspots = explorer.get_nearby_hotspots(clat, clon, radius, api_key)
                 s_results = []
-                for hs in hotspots[:80]:
+                for hs in hotspots[:60]:
                     obs = explorer.get_observations(hs['locId'], api_key, days)
-                    # חיפוש בטוח ללא קריסה אם שמות חסרים
                     matches = [o for o in obs if sci_name.lower() in o.get('sciName','').lower()]
                     if matches:
                         best = max(matches, key=lambda x: x.get('howMany', 1) if isinstance(x.get('howMany'), int) else 1)
                         s_results.append({
-                            "מיקום": hs.get('locName', 'Unknown'),
+                            "מיקום": hs.get('locName', 'לא ידוע'),
                             "ק\"מ": round(hs.get('calculated_dist', 0), 1),
                             "כמות": best.get('howMany', 1),
                             "צופה": best.get('userDisplayName', 'אנונימי'),
@@ -162,4 +172,4 @@ with tab2:
                         initial_view_state=pdk.ViewState(latitude=clat, longitude=clon, zoom=10)
                     ))
                 else:
-                    st.info("לא נמצאו תצפיות למין זה בטווח הנבחר.")
+                    st.info("אין תצפיות למין זה בטווח שנבחר.")

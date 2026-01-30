@@ -5,6 +5,7 @@ import pydeck as pdk
 import math
 import json
 import os
+import random
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
 
@@ -22,13 +23,14 @@ def load_birds_data():
 
 ALL_BIRDS = load_birds_data()
 BIRD_OPTIONS = [f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})" for b in ALL_BIRDS]
-# מיפוי שם עברי/אנגלי לשם מדעי
 BIRD_MAP = {f"{b.get('heb', 'Unknown')} ({b.get('eng', 'Unknown')})": b.get('sci', '') for b in ALL_BIRDS}
 
 class eBirdRadiusExplorer:
     def __init__(self):
         self.base_url = "https://api.ebird.org/v2"
-        self.geolocator = Nominatim(user_agent="ebird_israel_v12_final")
+        # שימוש ב-User Agent ייחודי למניעת שגיאת InsufficientPrivileges
+        self.ua = f"ebird_explorer_il_{random.randint(1000, 9999)}"
+        self.geolocator = Nominatim(user_agent=self.ua)
 
     def calculate_distance(self, lat1, lon1, lat2, lon2):
         R = 6371
@@ -50,9 +52,14 @@ with st.sidebar:
         loc = get_geolocation()
         if loc: clat, clon = loc['coords']['latitude'], loc['coords']['longitude']
     elif mode == "חיפוש עיר":
-        city = st.text_input("עיר:", "Tel Aviv")
-        res = explorer.geolocator.geocode(f"{city}, Israel")
-        if res: clat, clon = res.latitude, res.longitude
+        city = st.text_input("עיר (באנגלית):", "Kfar Saba")
+        try:
+            res = explorer.geolocator.geocode(f"{city}, Israel", timeout=10)
+            if res: 
+                clat, clon = res.latitude, res.longitude
+                st.success(f"📍 נמצאו קואורדינטות עבור {city}")
+        except:
+            st.error("שגיאה בחיפוש העיר. נסה שוב או השתמש במיקום אחר.")
     
     radius = st.slider("רדיוס (ק\"מ):", 1, 50, 20)
     days = st.slider("ימים אחורה:", 1, 30, 7)
@@ -61,72 +68,64 @@ if not api_key:
     st.info("אנא הזן API Key בסרגל הצד.")
     st.stop()
 
-tab1, tab2 = st.tabs(["📊 תצפיות באזור", "🎯 חיפוש מין ספציפי"])
-
-# פונקציה מרכזית לשליפת כל הנתונים ברדיוס
-def get_raw_obs(lat, lon, dist, days, api_key):
+# פונקציית עזר לשליפת כל התצפיות הגולמיות באזור
+def fetch_area_obs(lat, lon, dist, days, key):
     url = f"https://api.ebird.org/v2/data/obs/geo/recent"
     params = {"lat": lat, "lng": lon, "dist": dist, "back": days, "fmt": "json", "includeProvisional": "true"}
-    headers = {"X-eBirdApiToken": api_key}
-    res = requests.get(url, headers=headers, params=params)
-    return res.json() if res.status_code == 200 else []
+    r = requests.get(url, headers={"X-eBirdApiToken": key}, params=params)
+    return r.json() if r.status_code == 200 else []
+
+tab1, tab2 = st.tabs(["📊 תצפיות באזור", "🎯 חיפוש מין ספציפי"])
 
 with tab1:
-    if st.button("🔍 סרוק תצפיות בסביבה"):
-        with st.spinner("טוען נתונים..."):
-            all_data = get_raw_obs(clat, clon, radius, days, api_key)
-            if all_data:
-                df = pd.DataFrame(all_data)
+    if st.button("🔍 סרוק 10 מקומות מובילים"):
+        with st.spinner("מנתח נתונים..."):
+            raw_obs = fetch_area_obs(clat, clon, radius, days, api_key)
+            if raw_obs:
+                df = pd.DataFrame(raw_obs)
                 summary = []
-                for loc_name, group in df.groupby('locName'):
-                    d = explorer.calculate_distance(clat, clon, group.iloc[0]['lat'], group.iloc[0]['lng'])
+                for loc_id, group in df.groupby('locId'):
                     summary.append({
-                        "מיקום": loc_name,
-                        "ק\"מ": round(d, 1),
-                        "מינים": len(group['sciName'].unique()),
-                        "עדכון": group['obsDt'].max()
+                        "מיקום": group.iloc[0]['locName'],
+                        "ק\"מ": round(explorer.calculate_distance(clat, clon, group.iloc[0]['lat'], group.iloc[0]['lng']), 1),
+                        "מספר מינים": len(group['sciName'].unique()),
+                        "תצפית אחרונה": group['obsDt'].max().split(' ')[0]
                     })
-                st.dataframe(pd.DataFrame(summary).sort_values("ק\"מ"), use_container_width=True)
+                # הגבלה ל-10 המקומות עם הכי הרבה מינים
+                top_10 = pd.DataFrame(summary).sort_values("מספר מינים", ascending=False).head(10)
+                st.table(top_10)
             else:
-                st.info("אין תצפיות ברדיוס זה.")
+                st.warning("לא נמצאו תצפיות בטווח שנבחר.")
 
 with tab2:
     selected_bird = st.selectbox("בחר ציפור לחיפוש כמות מקסימלית:", [""] + BIRD_OPTIONS)
-    if st.button("🎯 חפש תצפיות") and selected_bird:
+    if st.button("🎯 חפש תצפית שיא") and selected_bird:
         target_sci = BIRD_MAP.get(selected_bird)
-        with st.spinner(f"סורק את כל הדיווחים של {selected_bird}..."):
-            # אנחנו מושכים את כל הנתונים הגולמיים ברדיוס ומסננים אצלנו בקוד
-            raw_data = get_raw_obs(clat, clon, radius, days, api_key)
-            
-            # סינון המין הספציפי (חיפוש גמיש בשם המדעי)
-            matches = [o for o in raw_data if target_sci.lower() in o.get('sciName', '').lower()]
+        with st.spinner(f"סורק את כל הדיווחים עבור {selected_bird}..."):
+            raw_obs = fetch_area_obs(clat, clon, radius, days, api_key)
+            # סינון המין המבוקש מתוך כל התצפיות באזור
+            matches = [o for o in raw_obs if target_sci.lower() in o.get('sciName', '').lower()]
             
             if matches:
-                results = []
-                # יצירת מילון כדי למצוא את המקסימום לכל מיקום
-                loc_max = {}
-                
+                # קיבוץ לפי מיקום למציאת המקסימום המקומי
+                loc_data = {}
                 for o in matches:
-                    loc = o.get('locName')
-                    count_val = o.get('howMany')
-                    # המרה למספר לצורך השוואה
-                    current_count = int(count_val) if str(count_val).isdigit() else 1
+                    loc = o['locName']
+                    c_str = o.get('howMany', '1')
+                    count = int(c_str) if str(c_str).isdigit() else 1
                     
-                    # אם המיקום לא קיים או שמצאנו כמות גדולה יותר, נעדכן
-                    if loc not in loc_max or current_count > loc_max[loc]['raw_count']:
-                        loc_max[loc] = {
+                    if loc not in loc_data or count > loc_data[loc]['count_num']:
+                        loc_data[loc] = {
                             "מיקום": loc,
-                            "ק\"מ": round(explorer.calculate_distance(clat, clon, o['lat'], o['lng']), 1),
-                            "כמות": count_val if count_val else "X",
-                            "צופה": o.get('userDisplayName', 'אנונימי'),
-                            "תאריך": o.get('obsDt'),
-                            "raw_count": current_count
+                            "כמות": c_str,
+                            "count_num": count,
+                            "מרחק": round(explorer.calculate_distance(clat, clon, o['lat'], o['lng']), 1),
+                            "תאריך": o['obsDt'],
+                            "צופה": o.get('userDisplayName', 'אנונימי')
                         }
                 
-                # המרה לרשימה ומיון לפי כמות (מהגבוה לנמוך)
-                final_df = pd.DataFrame(list(loc_max.values())).sort_values(by="raw_count", ascending=False)
-                
-                st.success(f"נמצאו תצפיות של {selected_bird} ב-{len(final_df)} מוקדים!")
-                st.dataframe(final_df.drop(columns=['raw_count']), use_container_width=True)
+                final_res = pd.DataFrame(list(loc_data.values())).sort_values("count_num", ascending=False)
+                st.success(f"נמצאו {len(final_res)} אתרים עם {selected_bird}")
+                st.dataframe(final_res.drop(columns=['count_num']), use_container_width=True)
             else:
-                st.info(f"לא נמצאו תצפיות עבור {selected_bird} ברדיוס שנבחר.")
+                st.info("לא נמצאו תצפיות למין זה.")

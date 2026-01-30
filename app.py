@@ -4,33 +4,32 @@ import pandas as pd
 import pydeck as pdk
 
 # הגדרות דף
-st.set_page_config(page_title="eBird Israel Explorer", layout="wide")
+st.set_page_config(page_title="eBird Israel Radius", layout="wide")
 
-class eBirdStreamlit:
+class eBirdRadiusExplorer:
     def __init__(self):
         self.base_url = "https://api.ebird.org/v2"
-        self.israel_districts = {
-            "HaZafon (North)": "IL-Z",
-            "HaMerkaz (Center)": "IL-M",
-            "HaDarom (South)": "IL-D",
-            "Haifa": "IL-HA",
-            "Yerushalayim (Jerusalem)": "IL-JM",
-            "Tel Aviv": "IL-TA"
+        # רשימת ערים עם כפר סבא כברירת מחדל
+        self.city_coordinates = {
+            "כפר סבא (Kfar Saba)": {"lat": 32.175, "lon": 34.906},
+            "חיפה (Haifa)": {"lat": 32.794, "lon": 34.989},
+            "תל אביב (Tel Aviv)": {"lat": 32.085, "lon": 34.781},
+            "ירושלים (Jerusalem)": {"lat": 31.768, "lon": 35.213},
+            "באר שבע (Beersheba)": {"lat": 31.253, "lon": 34.791},
+            "אילת (Eilat)": {"lat": 29.558, "lon": 34.948},
+            "נחשולים / מעגן מיכאל": {"lat": 32.561, "lon": 34.923}
         }
 
     def get_headers(self, api_key):
         return {"X-eBirdApiToken": api_key}
 
     @st.cache_data(ttl=3600)
-    def get_hotspots(_self, region_codes, api_key):
-        all_hotspots = []
+    def get_nearby_hotspots(_self, lat, lon, dist, api_key):
         headers = _self.get_headers(api_key)
-        for code in region_codes:
-            url = f"{_self.base_url}/ref/hotspot/{code}"
-            res = requests.get(url, headers=headers, params={"fmt": "json"})
-            if res.status_code == 200:
-                all_hotspots.extend(res.json())
-        return all_hotspots
+        url = f"{_self.base_url}/ref/hotspot/geo"
+        params = {"lat": lat, "lng": lon, "dist": dist, "fmt": "json"}
+        res = requests.get(url, headers=headers, params=params)
+        return res.json() if res.status_code == 200 else []
 
     @st.cache_data(ttl=600)
     def get_observations(_self, loc_id, api_key, days):
@@ -40,140 +39,110 @@ class eBirdStreamlit:
         res = requests.get(url, headers=headers, params=params)
         return res.json() if res.status_code == 200 else []
 
-def display_custom_map(df):
-    """פונקציה להצגת מפה עם נקודות וכיתוב שמות המקומות"""
-    if df.empty:
-        return
+def display_custom_map(df, center_lat, center_lon):
+    if df.empty: return
+    view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=11)
     
-    # הגדרת מצלמה ראשונית לפי ממוצע המיקומים
-    view_state = pdk.ViewState(
-        latitude=df["lat"].mean(),
-        longitude=df["lon"].mean(),
-        zoom=9,
-        pitch=0
-    )
-
-    # שכבת הנקודות האדומות
     scatter_layer = pdk.Layer(
-        "ScatterplotLayer",
-        df,
-        get_position=["lon", "lat"],
-        get_color=[200, 30, 0, 160],
-        get_radius=200,
-        pickable=True,
+        "ScatterplotLayer", df, get_position=["lon", "lat"],
+        get_color=[200, 30, 0, 160], get_radius=200, pickable=True
     )
-
-    # שכבת הטקסט - שם המקום בקטן מעל הנקודה
+    
     text_layer = pdk.Layer(
-        "TextLayer",
-        df,
-        get_position=["lon", "lat"],
-        get_text="מיקום",
-        get_size=12,
-        get_color=[255, 255, 255],
-        get_alignment_baseline="'bottom'",
-        get_pixel_offset=[0, -10],
+        "TextLayer", df, get_position=["lon", "lat"],
+        get_text="מיקום", get_size=15, get_color=[255, 255, 255],
+        get_alignment_baseline="'bottom'", get_pixel_offset=[0, -10]
     )
 
-    st.pydeck_chart(pdk.Deck(
-        layers=[scatter_layer, text_layer],
-        initial_view_state=view_state,
-        tooltip={"text": "{מיקום}"}
-    ))
+    st.pydeck_chart(pdk.Deck(layers=[scatter_layer, text_layer], initial_view_state=view_state, tooltip={"text": "{מיקום}"}))
 
-explorer = eBirdStreamlit()
-st.title("🇮🇱 eBird Israel Data Explorer")
+explorer = eBirdRadiusExplorer()
+st.title("📍 eBird Israel Explorer")
 
 with st.sidebar:
-    st.header("הגדרות")
+    st.header("הגדרות חיפוש")
     api_key = st.text_input("הכנס API Key:", type="password")
-    days = st.slider("ימים אחורה לבדיקה:", 1, 30, 7)
     
-    selected_names = st.multiselect(
-        "בחר מחוזות:", 
-        options=list(explorer.israel_districts.keys()),
-        default=["HaMerkaz (Center)"]
-    )
-    region_codes = [explorer.israel_districts[name] for name in selected_names]
+    # בחירת עיר עם כפר סבא כברירת מחדל (index=0)
+    city_list = list(explorer.city_coordinates.keys())
+    city = st.selectbox("בחר עיר מרכזית:", city_list, index=0)
     
-    if st.button("רענן נתונים (Clear Cache)"):
+    lat = explorer.city_coordinates[city]["lat"]
+    lon = explorer.city_coordinates[city]["lon"]
+    
+    st.divider()
+    radius = st.slider("רדיוס חיפוש (ק\"מ):", 1, 50, 15)
+    days = st.slider("ימים אחורה:", 1, 30, 7)
+    
+    if st.button("🗑️ רענן זיכרון (Clear Cache)"):
         st.cache_data.clear()
         st.rerun()
 
 if not api_key:
-    st.warning("אנא הכנס API Key בסרגל הצד.")
+    st.info("אנא הכנס API Key בסרגל הצד.")
     st.stop()
 
-tab1, tab2 = st.tabs(["📊 סקירת אזורים", "🎯 חיפוש מין ספציפי"])
+tab1, tab2 = st.tabs(["📊 תצפיות באזור", "🎯 חיפוש מין"])
 
 with tab1:
-    col1, col2 = st.columns(2)
-    action_most_birds = col1.button("🔍 מצא ריכוזי ציפורים")
-    action_most_species = col2.button("🦜 מצא עושר מינים")
-
-    if action_most_birds or action_most_species:
-        with st.spinner("טוען נתונים..."):
-            hotspots = explorer.get_hotspots(tuple(region_codes), api_key)
+    if st.button(f"🔍 חפש תצפיות סביב {city.split(' ')[0]}"):
+        with st.spinner(f"סורק מוקדים ברדיוס {radius} ק\"מ מכפר סבא..."):
+            hotspots = explorer.get_nearby_hotspots(lat, lon, radius, api_key)
             results = []
-            max_hs = 40 
             
-            for hs in hotspots[:max_hs]:
+            progress_bar = st.progress(0)
+            total_hs = min(len(hotspots), 80)
+            
+            for i, hs in enumerate(hotspots[:total_hs]):
                 obs = explorer.get_observations(hs['locId'], api_key, days)
                 if obs:
-                    unique_species = len(set(o.get('sciName', '') for o in obs))
-                    total_birds = sum(o.get('howMany', 0) for o in obs)
-                    # הוספת תאריך התצפית האחרונה
-                    last_date = obs[0].get('obsDt', 'לא ידוע')
-                    last_observer = obs[0].get('userDisplayName', 'לא ידוע')
-                    
                     results.append({
                         "מיקום": hs.get('locName', 'ללא שם'),
-                        "תאריך": last_date,
-                        "מספר מינים": unique_species,
-                        "סה\"כ פרטים": total_birds,
-                        "צפר אחרון": last_observer,
-                        "lat": hs.get('lat'),
-                        "lon": hs.get('lng')
+                        "ק\"מ": round(hs.get('dist', 0), 1),
+                        "מינים": len(set(o.get('sciName', '') for o in obs)),
+                        "פרטים": sum(o.get('howMany', 0) for o in obs),
+                        "תאריך": obs[0].get('obsDt', '').split(' ')[0],
+                        "lat": hs['lat'], "lon": hs['lng']
                     })
+                progress_bar.progress((i + 1) / total_hs)
             
-            df = pd.DataFrame(results)
-            if not df.empty:
-                sort_col = "סה\"כ פרטים" if action_most_birds else "מספר מינים"
-                df = df.sort_values(by=sort_col, ascending=False)
-                st.dataframe(df.drop(columns=['lat', 'lon']), use_container_width=True)
-                
-                st.subheader("מפת תצפיות עם שמות מוקדים")
-                display_custom_map(df)
+            if results:
+                df = pd.DataFrame(results).sort_values(by="מינים", ascending=False)
+                st.dataframe(
+                    df.drop(columns=['lat', 'lon']),
+                    use_container_width=True,
+                    column_config={
+                        "מיקום": st.column_config.TextColumn("מיקום", pinned=True),
+                        "ק\"מ": st.column_config.NumberColumn("ק\"מ", format="%.1f")
+                    }
+                )
+                display_custom_map(df, lat, lon)
+            else:
+                st.info("לא נמצאו תצפיות מעניינות ברדיוס זה.")
 
 with tab2:
-    st.subheader("חיפוש מיקומים עבור מין ספציפי")
-    species_name = st.text_input("הכנס שם ציפור (באנגלית או שם מדעי):")
-    find_button = st.button("חפש תצפיות")
-
-    if find_button and species_name:
-        with st.spinner(f"מחפש את {species_name}..."):
-            hotspots = explorer.get_hotspots(tuple(region_codes), api_key)
-            species_results = []
-            
-            for hs in hotspots[:50]:
+    st.subheader(f"חיפוש מין ספציפי סביב {city}")
+    species_name = st.text_input("שם ציפור (באנגלית/מדעי):", placeholder="למשל: Common Crane")
+    if st.button("🎯 חפש"):
+        with st.spinner(f"מחפש {species_name}..."):
+            hotspots = explorer.get_nearby_hotspots(lat, lon, radius, api_key)
+            s_results = []
+            for hs in hotspots[:80]:
                 obs = explorer.get_observations(hs['locId'], api_key, days)
-                matches = [o for o in obs if species_name.lower() in o.get('comName', '').lower() 
-                           or species_name.lower() in o.get('sciName', '').lower()]
-                
+                matches = [o for o in obs if species_name.lower() in o.get('comName', '').lower() or species_name.lower() in o.get('sciName', '').lower()]
                 if matches:
-                    best_obs = max(matches, key=lambda x: x.get('howMany', 0))
-                    species_results.append({
+                    best = max(matches, key=lambda x: x.get('howMany', 0))
+                    s_results.append({
                         "מיקום": hs['locName'],
-                        "כמות מקסימלית": best_obs.get('howMany', 0),
-                        "תאריך": best_obs.get('obsDt', ''),
-                        "צפר": best_obs.get('userDisplayName', 'לא ידוע'),
-                        "lat": hs['lat'],
-                        "lon": hs['lng']
+                        "ק\"מ": round(hs.get('dist', 0), 1),
+                        "כמות": best.get('howMany', 0),
+                        "תאריך": best.get('obsDt', '').split(' ')[0],
+                        "lat": hs['lat'], "lon": hs['lng']
                     })
-            
-            if species_results:
-                sdf = pd.DataFrame(species_results).sort_values(by="כמות מקסימלית", ascending=False)
-                st.dataframe(sdf.drop(columns=['lat', 'lon']), use_container_width=True)
-                display_custom_map(sdf)
+            if s_results:
+                sdf = pd.DataFrame(s_results).sort_values(by="כמות", ascending=False)
+                st.dataframe(sdf.drop(columns=['lat', 'lon']), use_container_width=True,
+                             column_config={"מיקום": st.column_config.TextColumn("מיקום", pinned=True)})
+                display_custom_map(sdf, lat, lon)
             else:
-                st.info("לא נמצאו תצפיות למין זה.")
+                st.info("לא נמצאו תצפיות למין זה ברדיוס שנבחר.")

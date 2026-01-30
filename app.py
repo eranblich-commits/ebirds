@@ -1,7 +1,7 @@
-
 import streamlit as st
 import requests
 import pandas as pd
+import pydeck as pdk
 
 # הגדרות דף
 st.set_page_config(page_title="eBird Israel Explorer", layout="wide")
@@ -40,8 +40,48 @@ class eBirdStreamlit:
         res = requests.get(url, headers=headers, params=params)
         return res.json() if res.status_code == 200 else []
 
-explorer = eBirdStreamlit()
+def display_custom_map(df):
+    """פונקציה להצגת מפה עם נקודות וכיתוב שמות המקומות"""
+    if df.empty:
+        return
+    
+    # הגדרת מצלמה ראשונית לפי ממוצע המיקומים
+    view_state = pdk.ViewState(
+        latitude=df["lat"].mean(),
+        longitude=df["lon"].mean(),
+        zoom=9,
+        pitch=0
+    )
 
+    # שכבת הנקודות האדומות
+    scatter_layer = pdk.Layer(
+        "ScatterplotLayer",
+        df,
+        get_position=["lon", "lat"],
+        get_color=[200, 30, 0, 160],
+        get_radius=200,
+        pickable=True,
+    )
+
+    # שכבת הטקסט - שם המקום בקטן מעל הנקודה
+    text_layer = pdk.Layer(
+        "TextLayer",
+        df,
+        get_position=["lon", "lat"],
+        get_text="מיקום",
+        get_size=12,
+        get_color=[255, 255, 255],
+        get_alignment_baseline="'bottom'",
+        get_pixel_offset=[0, -10],
+    )
+
+    st.pydeck_chart(pdk.Deck(
+        layers=[scatter_layer, text_layer],
+        initial_view_state=view_state,
+        tooltip={"text": "{מיקום}"}
+    ))
+
+explorer = eBirdStreamlit()
 st.title("🇮🇱 eBird Israel Data Explorer")
 
 with st.sidebar:
@@ -64,7 +104,6 @@ if not api_key:
     st.warning("אנא הכנס API Key בסרגל הצד.")
     st.stop()
 
-# יצירת טאבים לממשק נקי יותר
 tab1, tab2 = st.tabs(["📊 סקירת אזורים", "🎯 חיפוש מין ספציפי"])
 
 with tab1:
@@ -77,32 +116,34 @@ with tab1:
             hotspots = explorer.get_hotspots(tuple(region_codes), api_key)
             results = []
             max_hs = 40 
-            progress_bar = st.progress(0)
             
-            for i, hs in enumerate(hotspots[:max_hs]):
+            for hs in hotspots[:max_hs]:
                 obs = explorer.get_observations(hs['locId'], api_key, days)
                 if obs:
                     unique_species = len(set(o.get('sciName', '') for o in obs))
                     total_birds = sum(o.get('howMany', 0) for o in obs)
-                    # תיקון השגיאה: שימוש ב-.get() למניעת KeyError
+                    # הוספת תאריך התצפית האחרונה
+                    last_date = obs[0].get('obsDt', 'לא ידוע')
                     last_observer = obs[0].get('userDisplayName', 'לא ידוע')
                     
                     results.append({
                         "מיקום": hs.get('locName', 'ללא שם'),
+                        "תאריך": last_date,
                         "מספר מינים": unique_species,
                         "סה\"כ פרטים": total_birds,
                         "צפר אחרון": last_observer,
                         "lat": hs.get('lat'),
                         "lon": hs.get('lng')
                     })
-                progress_bar.progress((i + 1) / max_hs)
             
             df = pd.DataFrame(results)
             if not df.empty:
                 sort_col = "סה\"כ פרטים" if action_most_birds else "מספר מינים"
                 df = df.sort_values(by=sort_col, ascending=False)
                 st.dataframe(df.drop(columns=['lat', 'lon']), use_container_width=True)
-                st.map(df)
+                
+                st.subheader("מפת תצפיות עם שמות מוקדים")
+                display_custom_map(df)
 
 with tab2:
     st.subheader("חיפוש מיקומים עבור מין ספציפי")
@@ -116,7 +157,6 @@ with tab2:
             
             for hs in hotspots[:50]:
                 obs = explorer.get_observations(hs['locId'], api_key, days)
-                # סינון לפי שם המין (תומך בשם נפוץ או מדעי)
                 matches = [o for o in obs if species_name.lower() in o.get('comName', '').lower() 
                            or species_name.lower() in o.get('sciName', '').lower()]
                 
@@ -133,8 +173,7 @@ with tab2:
             
             if species_results:
                 sdf = pd.DataFrame(species_results).sort_values(by="כמות מקסימלית", ascending=False)
-                st.success(f"נמצאו {len(sdf)} מיקומים עם תצפיות של {species_name}")
                 st.dataframe(sdf.drop(columns=['lat', 'lon']), use_container_width=True)
-                st.map(sdf)
+                display_custom_map(sdf)
             else:
-                st.info("לא נמצאו תצפיות למין זה באזורים שנבחרו.")
+                st.info("לא נמצאו תצפיות למין זה.")

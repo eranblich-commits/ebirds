@@ -91,13 +91,13 @@ class eBirdEngine:
         return df
 
 def load_birds_data():
-    """טוען את רשימת הציפורות - אם birds_data.py לא קיים, משתמש ברשימה בסיסית"""
+    """טוען את רשימת הציפורות - אם birds.py לא קיים, משתמש ברשימה בסיסית"""
     try:
-        from birds_data import ALL_BIRDS
+        from birds import ALL_BIRDS
         return ALL_BIRDS
     except (ImportError, ModuleNotFoundError):
         # רשימה בסיסית של ציפורות נפוצות בישראל אם הקובץ לא קיים
-        st.warning("קובץ birds_data.py לא נמצא - משתמש ברשימה בסיסית")
+        st.warning("קובץ birds.py לא נמצא - משתמש ברשימה בסיסית")
         return [
             {"heb": "דרור הבית", "eng": "House Sparrow", "sci": "Passer domesticus"},
             {"heb": "בולבול", "eng": "Common Bulbul", "sci": "Pycnonotus barbatus"},

@@ -257,8 +257,17 @@ if st.button("🚀 סריקה מלאה (כל המוקדים)", type="primary", u
                 axis=1
             )
             
+            # ספירת כפילויות לפני ההסרה
+            original_count = len(df)
+            
+            # הסרת כפילויות: אותו מין, מקום ותאריך-שעה = תצפית אחת
+            df = df.drop_duplicates(subset=['sciName', 'locId', 'obsDt'], keep='first')
+            
+            duplicates_removed = original_count - len(df)
+            
             st.session_state['master_df'] = df
             st.session_state['hotspot_counts'] = hotspot_counts
+            st.session_state['duplicates_removed'] = duplicates_removed
             
             progress_bar.progress(1.0, "✅ הושלם!")
             time.sleep(0.3)
@@ -266,7 +275,8 @@ if st.button("🚀 סריקה מלאה (כל המוקדים)", type="primary", u
             
             st.success(f"""
             ✅ **הסריקה הושלמה!**
-            - 📊 {len(df):,} תצפיות
+            - 📊 {len(df):,} תצפיות ייחודיות
+            - 🗑️ הוסרו {duplicates_removed:,} כפילויות
             - 📍 {df['locId'].nunique()} מוקדים  
             - 🦅 {df['sciName'].nunique()} מינים שונים
             """)
@@ -403,61 +413,81 @@ if 'master_df' in st.session_state:
     with tab3:
         st.header("📊 סטטיסטיקה כללית")
         
+        # הסרת כפילויות - תצפית אחת לכל שילוב של: מין, מקום, תאריך-שעה
+        df_unique = df.drop_duplicates(subset=['sciName', 'locId', 'obsDt'], keep='first').copy()
+        
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("סה\"כ תצפיות", f"{len(df):,}")
+            st.metric("סה\"כ תצפיות (ייחודיות)", f"{len(df_unique):,}")
         with col2:
-            st.metric("מינים שונים", f"{df['sciName'].nunique()}")
+            st.metric("מינים שונים", f"{df_unique['sciName'].nunique()}")
         with col3:
-            st.metric("מוקדים", f"{df['locId'].nunique()}")
+            st.metric("מוקדים", f"{df_unique['locId'].nunique()}")
         
-        st.subheader("🦅 המינים הנצפים ביותר")
+        st.write("")
+        st.info(f"📅 נתונים מ-{days} ימים אחרונים | הוסרו {len(df) - len(df_unique):,} תצפיות כפולות")
         
-        # ספירת תצפיות לפי מין ושם באנגלית
-        if 'comName' in df.columns:
-            species_counts = df.groupby('comName').size().sort_values(ascending=False).head(10)
-            st.bar_chart(species_counts)
+        st.write("")
+        st.subheader("🦅 10 המינים הנצפים ביותר")
+        
+        # ספירת תצפיות ייחודיות לכל מין
+        species_observation_counts = df_unique['comName'].value_counts() if 'comName' in df_unique.columns else df_unique['sciName'].value_counts()
+        top_10_species = species_observation_counts.head(10)
+        
+        # חישוב סה"כ פרטים עבור כל מין
+        species_details = []
+        for species_name in top_10_species.index:
+            if 'comName' in df_unique.columns:
+                species_df = df_unique[df_unique['comName'] == species_name]
+            else:
+                species_df = df_unique[df_unique['sciName'] == species_name]
             
-            # טבלה מפורטת
-            species_details = []
-            for species_name in species_counts.index:
-                species_df = df[df['comName'] == species_name]
-                total_individuals = 0
-                
-                # חישוב סכום הפרטים
-                for qty in species_df['howMany']:
-                    try:
-                        if pd.notna(qty) and qty != 'X':
-                            total_individuals += int(qty)
-                        else:
-                            total_individuals += 1  # X = לפחות 1
-                    except:
-                        total_individuals += 1
-                
-                species_details.append({
-                    "מין (אנגלית)": species_name,
-                    "מספר תצפיות": len(species_df),
-                    "סה\"כ פרטים": total_individuals
-                })
+            total_individuals = 0
             
-            st.write("**פירוט מינים:**")
-            st.dataframe(
-                pd.DataFrame(species_details),
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            # אם אין comName, נשתמש ב-sciName
-            st.info("שם אנגלי לא זמין - מציג שמות מדעיים")
-            species_counts = df['sciName'].value_counts().head(10)
-            st.bar_chart(species_counts)
+            # חישוב סכום הפרטים
+            for qty in species_df['howMany']:
+                try:
+                    if pd.notna(qty) and str(qty).strip() != '' and str(qty).upper() != 'X':
+                        total_individuals += int(float(qty))
+                    else:
+                        total_individuals += 1  # X או ריק = לפחות 1
+                except:
+                    total_individuals += 1
+            
+            species_details.append({
+                "מין (אנגלית)" if 'comName' in df_unique.columns else "מין (מדעי)": species_name,
+                "תצפיות": len(species_df),
+                "סה\"כ פרטים": total_individuals
+            })
         
+        # טבלה
+        species_table = pd.DataFrame(species_details)
+        st.dataframe(
+            species_table,
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+        
+        # גרף עמודות - לפי מספר תצפיות
+        st.write("")
+        st.subheader("📊 גרף: מספר תצפיות לפי מין")
+        chart_data = species_table.set_index(species_table.columns[0])['תצפיות']
+        st.bar_chart(chart_data)
+        
+        # גרף נוסף - לפי סה"כ פרטים
+        st.write("")
+        st.subheader("📊 גרף: סה\"כ פרטים לפי מין")
+        chart_data2 = species_table.set_index(species_table.columns[0])['סה\"כ פרטים']
+        st.bar_chart(chart_data2)
+        
+        st.write("")
         st.subheader("📅 תצפיות לפי תאריך")
-        if 'obsDt' in df.columns:
+        if 'obsDt' in df_unique.columns:
             try:
-                df['date'] = pd.to_datetime(df['obsDt']).dt.date
-                daily_counts = df.groupby('date').size().sort_index()
+                df_unique['date'] = pd.to_datetime(df_unique['obsDt']).dt.date
+                daily_counts = df_unique.groupby('date').size().sort_index()
                 st.line_chart(daily_counts)
-            except:
+            except Exception as e:
                 st.info("לא ניתן להציג גרף תאריכים")

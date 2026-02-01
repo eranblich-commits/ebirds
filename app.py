@@ -292,10 +292,22 @@ if 'master_df' in st.session_state:
         
         for loc_id, data in hotspot_counts.items():
             distance = engine.calculate_distance(clat, clon, data['lat'], data['lng'])
+            
+            # מציאת התצפית האחרונה במוקד זה
+            loc_obs = df[df['locId'] == loc_id]
+            latest_date = ""
+            if not loc_obs.empty and 'obsDt' in loc_obs.columns:
+                latest_date = loc_obs['obsDt'].max()
+            
+            # יצירת לינק ל-eBird
+            ebird_link = f"https://ebird.org/hotspot/{loc_id}"
+            
             location_data.append({
                 "מיקום": data['name'],
                 "מספר מינים": data['count'],
                 "מרחק (ק\"מ)": round(distance, 1),
+                "תאריך אחרון": latest_date,
+                "קישור": ebird_link,
                 "locId": loc_id
             })
         
@@ -305,15 +317,24 @@ if 'master_df' in st.session_state:
             
             st.write(f"**🔍 נבדקו {len(locations_df)} מוקדים**")
             
-            # הצגה עם צבעים
-            st.dataframe(
-                top_10[['מיקום', 'מספר מינים', 'מרחק (ק\"מ)']].reset_index(drop=True),
-                use_container_width=True,
-                hide_index=True,
-                height=400
-            )
+            # הצגת הטבלה עם קישורים
+            for idx, row in top_10.iterrows():
+                with st.container():
+                    col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 2, 1])
+                    with col1:
+                        st.write(f"**{row['מיקום']}**")
+                    with col2:
+                        st.write(f"🦅 {row['מספר מינים']}")
+                    with col3:
+                        st.write(f"📍 {row['מרחק (ק״מ)']} ק\"מ")
+                    with col4:
+                        st.write(f"🕐 {row['תאריך אחרון']}")
+                    with col5:
+                        st.link_button("🔗", row['קישור'])
+                    st.divider()
             
             # גרף
+            st.subheader("📊 גרף השוואתי")
             st.bar_chart(top_10.set_index('מיקום')['מספר מינים'])
         else:
             st.info("אין נתוני מוקדים זמינים")
@@ -347,12 +368,31 @@ if 'master_df' in st.session_state:
                     matches['sort_qty'] = pd.to_numeric(matches['howMany'], errors='coerce').fillna(1).astype(int)
                     top_10 = matches.sort_values("sort_qty", ascending=False).head(10)
                     
-                    display = top_10[['locName', 'howMany', 'distance', 'obsDt', 'userDisplayName']].copy()
-                    display.columns = ['מיקום', 'כמות', 'מרחק (ק\"מ)', 'תאריך', 'צופה']
-                    display['מרחק (ק\"מ)'] = display['מרחק (ק\"מ)'].round(1)
+                    # בדיקה אילו עמודות קיימות
+                    available_cols = []
+                    col_mapping = {
+                        'locName': 'מיקום',
+                        'howMany': 'כמות',
+                        'distance': 'מרחק (ק"מ)',
+                        'obsDt': 'תאריך',
+                        'userDisplayName': 'צופה'
+                    }
                     
-                    st.write(f"**נמצאו {len(matches)} תצפיות של {selected_bird}**")
-                    st.dataframe(display.reset_index(drop=True), use_container_width=True, hide_index=True)
+                    for col, name in col_mapping.items():
+                        if col in top_10.columns:
+                            available_cols.append(col)
+                    
+                    if available_cols:
+                        display = top_10[available_cols].copy()
+                        display.columns = [col_mapping[col] for col in available_cols]
+                        
+                        if 'מרחק (ק"מ)' in display.columns:
+                            display['מרחק (ק"מ)'] = display['מרחק (ק"מ)'].round(1)
+                        
+                        st.write(f"**נמצאו {len(matches)} תצפיות של {selected_bird}**")
+                        st.dataframe(display.reset_index(drop=True), use_container_width=True, hide_index=True)
+                    else:
+                        st.error("לא ניתן להציג נתונים - עמודות חסרות")
                 else:
                     st.info(f"לא נמצאו תצפיות של {selected_bird}")
 
@@ -369,11 +409,51 @@ if 'master_df' in st.session_state:
             st.metric("מוקדים", f"{df['locId'].nunique()}")
         
         st.subheader("🦅 המינים הנצפים ביותר")
-        species_counts = df['sciName'].value_counts().head(10)
-        st.bar_chart(species_counts)
+        
+        # ספירת תצפיות לפי מין ושם באנגלית
+        if 'comName' in df.columns:
+            species_counts = df.groupby('comName').size().sort_values(ascending=False).head(10)
+            st.bar_chart(species_counts)
+            
+            # טבלה מפורטת
+            species_details = []
+            for species_name in species_counts.index:
+                species_df = df[df['comName'] == species_name]
+                total_individuals = 0
+                
+                # חישוב סכום הפרטים
+                for qty in species_df['howMany']:
+                    try:
+                        if pd.notna(qty) and qty != 'X':
+                            total_individuals += int(qty)
+                        else:
+                            total_individuals += 1  # X = לפחות 1
+                    except:
+                        total_individuals += 1
+                
+                species_details.append({
+                    "מין (אנגלית)": species_name,
+                    "מספר תצפיות": len(species_df),
+                    "סה\"כ פרטים": total_individuals
+                })
+            
+            st.write("**פירוט מינים:**")
+            st.dataframe(
+                pd.DataFrame(species_details),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            # אם אין comName, נשתמש ב-sciName
+            st.info("שם אנגלי לא זמין - מציג שמות מדעיים")
+            species_counts = df['sciName'].value_counts().head(10)
+            st.bar_chart(species_counts)
         
         st.subheader("📅 תצפיות לפי תאריך")
         if 'obsDt' in df.columns:
-            df['date'] = pd.to_datetime(df['obsDt']).dt.date
-            daily_counts = df.groupby('date').size().sort_index()
-            st.line_chart(daily_counts)
+            try:
+                df['date'] = pd.to_datetime(df['obsDt']).dt.date
+                daily_counts = df.groupby('date').size().sort_index()
+                st.line_chart(daily_counts)
+            except:
+                st.info("לא ניתן להציג גרף תאריכים")

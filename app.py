@@ -297,48 +297,48 @@ if 'master_df' in st.session_state:
             loc_obs = df[df['locId'] == loc_id]
             latest_date = ""
             if not loc_obs.empty and 'obsDt' in loc_obs.columns:
-                latest_date = loc_obs['obsDt'].max()
+                latest_date = str(loc_obs['obsDt'].max())
             
             # יצירת לינק ל-eBird
             ebird_link = f"https://ebird.org/hotspot/{loc_id}"
             
             location_data.append({
-                "מיקום": data['name'],
-                "מספר מינים": data['count'],
-                "מרחק (ק\"מ)": round(distance, 1),
-                "תאריך אחרון": latest_date,
-                "קישור eBird": ebird_link,
+                "מיקום": str(data['name']),
+                "מינים": int(data['count']),
+                "מרחק_קמ": round(distance, 1),
+                "תאריך": latest_date,
+                "קישור": ebird_link,
                 "locId": loc_id
             })
         
         if location_data:
             locations_df = pd.DataFrame(location_data)
-            top_10 = locations_df.sort_values("מספר מינים", ascending=False).head(10)
+            top_10 = locations_df.sort_values("מינים", ascending=False).head(10)
             
-            st.write(f"**🔍 נבדקו {len(locations_df)} מוקדים**")
-            st.write("---")
+            st.write(f"**נבדקו {len(locations_df)} מוקדים**")
+            st.write("")
             
-            # הצגת כל מוקד בפורמט מסודר
-            for i, (idx, row) in enumerate(top_10.iterrows(), 1):
-                col1, col2 = st.columns([5, 1])
-                
-                with col1:
-                    st.markdown(f"""
-                    ### {i}. {row['מיקום']}
-                    - 🦅 **{row['מספר מינים']} מינים**
-                    - 📍 **{row['מרחק (ק״מ)']} ק"מ** ממרכז החיפוש
-                    - 🕐 תצפית אחרונה: **{row['תאריך אחרון']}**
-                    - 🔗 [לחץ לפתיחה ב-eBird]({row['קישור eBird']})
-                    """)
-                
-                with col2:
-                    st.metric("מינים", row['מספר מינים'])
-                
-                st.divider()
+            # טבלה עם לינקים
+            display_df = top_10[['מיקום', 'מינים', 'מרחק_קמ', 'תאריך']].copy()
+            display_df.columns = ['מיקום', 'מספר מינים', 'מרחק (ק"מ)', 'תאריך אחרון']
+            
+            st.dataframe(
+                display_df.reset_index(drop=True),
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
+            
+            # הצגת קישורים בנפרד
+            st.write("")
+            st.subheader("קישורים למוקדים")
+            for idx, row in top_10.iterrows():
+                st.markdown(f"• [{row['מיקום']}]({row['קישור']})")
             
             # גרף
-            st.subheader("📊 גרף השוואתי")
-            chart_data = top_10.set_index('מיקום')['מספר מינים']
+            st.write("")
+            st.subheader("גרף השוואתי")
+            chart_data = top_10.set_index('מיקום')['מינים']
             st.bar_chart(chart_data)
         else:
             st.info("אין נתוני מוקדים זמינים")

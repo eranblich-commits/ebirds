@@ -307,7 +307,7 @@ if 'master_df' in st.session_state:
                 "מספר מינים": data['count'],
                 "מרחק (ק\"מ)": round(distance, 1),
                 "תאריך אחרון": latest_date,
-                "קישור": ebird_link,
+                "קישור eBird": ebird_link,
                 "locId": loc_id
             })
         
@@ -316,26 +316,30 @@ if 'master_df' in st.session_state:
             top_10 = locations_df.sort_values("מספר מינים", ascending=False).head(10)
             
             st.write(f"**🔍 נבדקו {len(locations_df)} מוקדים**")
+            st.write("---")
             
-            # הצגת הטבלה עם קישורים
-            for idx, row in top_10.iterrows():
-                with st.container():
-                    col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 2, 1])
-                    with col1:
-                        st.write(f"**{row['מיקום']}**")
-                    with col2:
-                        st.write(f"🦅 {row['מספר מינים']}")
-                    with col3:
-                        st.write(f"📍 {row['מרחק (ק״מ)']} ק\"מ")
-                    with col4:
-                        st.write(f"🕐 {row['תאריך אחרון']}")
-                    with col5:
-                        st.link_button("🔗", row['קישור'])
-                    st.divider()
+            # הצגת כל מוקד בפורמט מסודר
+            for i, (idx, row) in enumerate(top_10.iterrows(), 1):
+                col1, col2 = st.columns([5, 1])
+                
+                with col1:
+                    st.markdown(f"""
+                    ### {i}. {row['מיקום']}
+                    - 🦅 **{row['מספר מינים']} מינים**
+                    - 📍 **{row['מרחק (ק״מ)']} ק"מ** ממרכז החיפוש
+                    - 🕐 תצפית אחרונה: **{row['תאריך אחרון']}**
+                    - 🔗 [לחץ לפתיחה ב-eBird]({row['קישור eBird']})
+                    """)
+                
+                with col2:
+                    st.metric("מינים", row['מספר מינים'])
+                
+                st.divider()
             
             # גרף
             st.subheader("📊 גרף השוואתי")
-            st.bar_chart(top_10.set_index('מיקום')['מספר מינים'])
+            chart_data = top_10.set_index('מיקום')['מספר מינים']
+            st.bar_chart(chart_data)
         else:
             st.info("אין נתוני מוקדים זמינים")
 
